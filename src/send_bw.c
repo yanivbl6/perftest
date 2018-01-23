@@ -482,7 +482,6 @@ int main(int argc, char *argv[])
 			}
 
 		} else if(run_iter_bw_server(&ctx,&user_param)) {
-
 			return 17;
 		}
 
@@ -491,6 +490,23 @@ int main(int argc, char *argv[])
 		if (user_param.duplex && user_param.test_type != DURATION) {
 			xchg_bw_reports(&user_comm, &my_bw_rep,&rem_bw_rep,atof(user_param.rem_version));
 			print_full_bw_report(&user_param, &my_bw_rep, &rem_bw_rep);
+		}
+
+		if (0 && user_param.calc_num > 0)
+		{
+			if (user_param.machine == CLIENT){
+				printf("\nSend buffer:\n");
+			} else {
+                                printf("\nRecv buffer:\n");
+			}
+			int perline = 8;
+			int k,w;
+			for (k = 0; k < ctx.buff_size/(sizeof(int)*perline); ++k){
+				for (w = 0; w < perline; ++w){
+					printf("%d\t",((int*) ctx.buf[0])[k*perline + w]);
+				}
+				printf("\n");
+			}
 		}
 
 		if (user_param.report_both && user_param.duplex) {

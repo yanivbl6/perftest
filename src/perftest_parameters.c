@@ -716,6 +716,12 @@ static void init_perftest_params(struct perftest_parameters *user_param)
 	user_param->flows_burst		= 1;
 	user_param->perform_warm_up	= 0;
 	user_param->use_ooo		= 0;
+
+	user_param->use_calc		= 0;
+	user_param->calc_num            = 0;
+	user_param->calc_type		= IBV_EXP_VECTOR_CALC_DATA_TYPE_FLOAT32;
+        user_param->calc_chunk          = IBV_EXP_VECTOR_CALC_CHUNK_1024;
+
 }
 
 /******************************************************************************
@@ -1777,6 +1783,12 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	static int vlan_en = 0;
 	static int vlan_pcp_flag = 0;
 
+	static int use_calc_flag = 0;
+        static int calc_type_flag = 0;
+        static int calc_chunk_flag = 0;
+
+
+
 	char *server_ip = NULL;
 	char *client_ip = NULL;
 	char *local_ip = NULL;
@@ -1786,7 +1798,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 
 	if(user_param->connection_type == RawEth)
 		user_param->machine = UNCHOSEN;
-
+	
 	while (1) {
 		static const struct option long_options[] = {
 			{ .name = "port",		.has_arg = 1, .val = 'p' },
@@ -1868,6 +1880,13 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 			{ .name = "mmap",		.has_arg = 1, .flag = &mmap_file_flag, .val = 1},
 			{ .name = "mmap-offset",	.has_arg = 1, .flag = &mmap_offset_flag, .val = 1},
 			{ .name = "ipv6",		.has_arg = 0, .flag = &ipv6_flag, .val = 1},
+
+                        { .name = "calc",               .has_arg = 1, .flag = &use_calc_flag, .val = 1},
+                        { .name = "calc_type",          .has_arg = 1, .flag = &calc_type_flag, .val = 1},
+                        { .name = "calc_chunk",         .has_arg = 1, .flag = &calc_chunk_flag, .val = 1},
+
+
+
 			#ifdef HAVE_IPV6
 			{ .name = "raw_ipv6",		.has_arg = 0, .flag = &raw_ipv6_flag, .val = 1},
 			#endif
@@ -2341,7 +2360,35 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 					}
 					vlan_pcp_flag = 0;
 				}
+
+                                if (use_calc_flag) {
+#ifndef HAVE_VERBS_EXP
+                                        fprintf(stderr, "Vector calc requires expirimental verbs\n");
+                                        return FAILURE;
+#else
+					user_param->use_calc = 1;
+					user_param->calc_num = strtol(optarg, NULL, 0);
+					if (user_param->calc_num < 2)
+					{
+                                                fprintf(stderr, "Invalid number of vectors for calc operation\n");
+                                                return FAILURE;
+					} 
+			                user_param->use_exp = 1;
+					use_calc_flag = 0;
+					user_param->mr_per_qp = 1;
+#endif
+				}
 				break;
+
+                                if (calc_type_flag) {
+					user_param->calc_type = strtol(optarg, NULL, 0);
+					calc_type_flag = 0;
+				}
+
+                                if (calc_chunk_flag) {
+                                        user_param->calc_chunk = strtol(optarg, NULL, 0);
+                                        calc_chunk_flag = 0;
+				}
 
 			default:
 				  fprintf(stderr," Invalid Command or flag.\n");

@@ -260,6 +260,10 @@ typedef enum { ITERATIONS , DURATION } TestMethod;
 /* for duration calculation */
 typedef enum { START_STATE, SAMPLE_STATE, STOP_SAMPLE_STATE, END_STATE} DurationStates;
 
+/* for calc operation */
+typedef enum ibv_exp_vector_calc_data_type CalcType;
+
+
 /* Report format (Gbit/s VS MB/s) */
 enum ctx_report_fmt { GBS, MBS };
 
@@ -501,6 +505,10 @@ struct perftest_parameters {
 	uint32_t			vlan_pcp;
 	void 				(*print_eth_func)(void*);
 
+	int				use_calc;
+        int				calc_num;
+        CalcType			calc_type;
+	uint32_t			calc_chunk;	
 };
 
 struct report_options {

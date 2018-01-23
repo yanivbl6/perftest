@@ -93,7 +93,7 @@
 
 #define NOTIFY_COMP_ERROR_SEND(wc,scnt,ccnt)                     											\
 	{ fprintf(stderr," Completion with error at client\n");      											\
-	  fprintf(stderr," Failed status %d: wr_id %d syndrom 0x%x\n",wc.status,(int) wc.wr_id,wc.vendor_err);	\
+	  fprintf(stderr," Failed status %d: wr_id %d syndrom 0x%x\n",wc.status,(int) wc.wr_id,wc.vendor_err );	\
 	  fprintf(stderr, "scnt=%lu, ccnt=%lu\n",scnt, ccnt); }
 
 #define NOTIFY_COMP_ERROR_RECV(wc,rcnt)                     											    \
@@ -382,6 +382,10 @@ int ctx_connect(struct pingpong_context *ctx,
 void ctx_set_send_exp_wqes(struct pingpong_context *ctx,
 					   struct perftest_parameters *user_param,
 					   struct pingpong_dest *rem_dest);
+
+
+void ctx_set_send_exp_calc_wqes(struct pingpong_context *ctx,
+                                           struct perftest_parameters *user_param);
 
 
 /* ctx_set_send_regwqes.
@@ -706,10 +710,16 @@ static __inline void increase_rem_addr(struct ibv_send_wr *wr,int size,uint64_t 
  */
 static __inline void increase_loc_addr(struct ibv_sge *sg,int size,uint64_t rcnt,uint64_t prim_addr,int server_is_ud, int cache_line_size, int cycle_buffer)
 {
+
+	//printf("size = %d, rcnt = %lu, prim_addr = %lu, cache_line_size = %d, cycle_buffer = %d, before = %x, add: %x\n", 
+	//	size,rcnt,prim_addr,cache_line_size,cycle_buffer,(int) sg->addr, (int) INC(size,cache_line_size));
+
 	sg->addr  += INC(size,cache_line_size);
 
-	if ( ((rcnt+1) % (cycle_buffer/ INC(size,cache_line_size))) == 0 )
+	if (((rcnt+1) % (cycle_buffer/ INC(size,cache_line_size))) == 0 )
 		sg->addr = prim_addr;
+
+
 
 }
 

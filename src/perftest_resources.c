@@ -631,8 +631,11 @@ void alloc_ctx(struct pingpong_context *ctx,struct perftest_parameters *user_par
 {
 	uint64_t tarr_size;
 	int num_of_qps_factor;
+
 	ctx->cycle_buffer = user_param->cycle_buffer;
 	ctx->cache_line_size = user_param->cache_line_size;
+
+
 
 	ALLOCATE(user_param->port_by_qp, uint64_t, user_param->num_of_qps);
 
@@ -643,8 +646,15 @@ void alloc_ctx(struct pingpong_context *ctx,struct perftest_parameters *user_par
 		ALLOCATE(user_param->tcompleted, cycles_t, 1);
 
 	ALLOCATE(ctx->qp, struct ibv_qp*, user_param->num_of_qps);
-	ALLOCATE(ctx->mr, struct ibv_mr*, user_param->num_of_qps);
-	ALLOCATE(ctx->buf, void* , user_param->num_of_qps);
+
+	if (user_param->calc_num == 0){
+		ALLOCATE(ctx->mr, struct ibv_mr*, user_param->num_of_qps);
+		ALLOCATE(ctx->buf, void* , user_param->num_of_qps);
+	} else {
+		ALLOCATE(ctx->mr, struct ibv_mr*, user_param->num_of_qps * user_param->calc_num);
+                ALLOCATE(ctx->buf, void* , user_param->num_of_qps * user_param->calc_num);
+	}
+
 
 	#ifdef HAVE_ACCL_VERBS
 	ALLOCATE(ctx->qp_burst_family, struct ibv_exp_qp_burst_family*, user_param->num_of_qps);
@@ -683,7 +693,9 @@ void alloc_ctx(struct pingpong_context *ctx,struct perftest_parameters *user_par
 
 	if (user_param->machine == CLIENT || user_param->tst == LAT || user_param->duplex) {
 
-		ALLOCATE(ctx->sge_list, struct ibv_sge,user_param->num_of_qps * user_param->post_list);
+		int sges_per_qp = ( user_param->calc_num ) ? user_param->calc_num  : user_param->post_list;
+
+		ALLOCATE(ctx->sge_list, struct ibv_sge,user_param->num_of_qps * sges_per_qp);
 		#ifdef HAVE_VERBS_EXP
 		ALLOCATE(ctx->exp_wr, struct ibv_exp_send_wr, user_param->num_of_qps * user_param->post_list);
 		#endif
@@ -735,7 +747,8 @@ int destroy_ctx(struct pingpong_context *ctx,
 		sleep(user_param->wait_destroy);
 	}
 
-	dereg_counter = (user_param->mr_per_qp) ? user_param->num_of_qps : 1;
+	dereg_counter = (user_param->mr_per_qp) ? ((user_param->calc_num ? user_param->calc_num : 1 ) * user_param->num_of_qps) : 1;
+
 
 	if (user_param->work_rdma_cm == ON)
 		rdma_disconnect(ctx->cm_id);
@@ -1135,6 +1148,18 @@ struct ibv_exp_res_domain* create_res_domain(struct pingpong_context *ctx, struc
 }
 #endif
 
+
+/******************************************************************************
+ *
+ ******************************************************************************/
+
+/*
+int create_single_umr(struct pingpong_context *ctx, struct perftest_parameters *user_param, int qp_index){
+	return 0;
+} 
+*/
+
+
 /******************************************************************************
  *
  ******************************************************************************/
@@ -1172,6 +1197,7 @@ int create_single_mr(struct pingpong_context *ctx, struct perftest_parameters *u
 			return FAILURE;
 		}
 	}
+	have cuda
 	#endif
 
 	if (user_param->mmap_file != NULL) {
@@ -1209,7 +1235,7 @@ int create_single_mr(struct pingpong_context *ctx, struct perftest_parameters *u
 			}
 
 			memset(ctx->buf[qp_index], 0, ctx->buff_size);
-		} else {
+		} else { 
 			ctx->buf[qp_index] = NULL;
 			#ifdef HAVE_VERBS_EXP
 			exp_flags |= IBV_EXP_ACCESS_ALLOCATE_MR;
@@ -1296,7 +1322,14 @@ int create_mr(struct pingpong_context *ctx, struct perftest_parameters *user_par
 	}
 
 	/* create the rest if needed, or copy the first one */
-	for (i = 1; i < user_param->num_of_qps; i++) {
+
+	int num_mrs = user_param->num_of_qps;
+
+	if (user_param->calc_num){
+		num_mrs*= user_param->calc_num;
+	}
+
+	for (i = 1; i < num_mrs; i++) {
 		if (user_param->mr_per_qp) {
 			if (create_single_mr(ctx, user_param, i)) {
 				fprintf(stderr, "failed to create mr\n");
@@ -1823,6 +1856,11 @@ struct ibv_qp* ctx_exp_qp_create(struct pingpong_context *ctx,
 		}
 	}
 	#endif
+
+	if (user_param->calc_num > 0){
+		attr.exp_create_flags |= IBV_EXP_QP_CREATE_CROSS_CHANNEL;
+                //attr.exp_create_flags |= IBV_EXP_QP_CREATE_UMR;
+	}
 
 	qp = ibv_exp_create_qp(ctx->context, &attr);
 	if (!qp)
@@ -2490,20 +2528,100 @@ void ctx_set_send_wqes(struct pingpong_context *ctx,
 		struct perftest_parameters *user_param,
 		struct pingpong_dest *rem_dest)
 {
-
 	#ifdef HAVE_VERBS_EXP
-	if (user_param->use_exp == 1) {
-		ctx_set_send_exp_wqes(ctx,user_param,rem_dest);
+	if (user_param->use_exp == 1) 
+	{
+		if (user_param->calc_num == 0)
+			ctx_set_send_exp_wqes(ctx,user_param,rem_dest);
+		else 
+                        ctx_set_send_exp_calc_wqes(ctx,user_param);	
 	}
-	else {
+	else
 	#endif
+	{
 		ctx_set_send_reg_wqes(ctx,user_param,rem_dest);
-	#ifdef HAVE_VERBS_EXP
 	}
-	#endif
 }
 
 #ifdef HAVE_VERBS_EXP
+
+void ctx_set_send_exp_calc_wqes(struct pingpong_context *ctx,
+                struct perftest_parameters *user_param){
+
+        int i,j;
+        int num_of_qps = user_param->num_of_qps;
+	int vecs = user_param->calc_num;
+
+
+	int chunks = 0;
+
+
+	switch (user_param->calc_chunk){
+	case 64:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_64;
+		break;
+	case 128:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_128;
+		break;
+	case 256:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_256;
+		break;
+	case 512:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_512;
+		break;
+	case 1024:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_1024;
+		break;
+	case 2048:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_2048;
+		break;
+	case 4096:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_4096;
+		break;
+	case 8192:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_8192;
+		break;
+	default:
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_64;
+		fprintf(stderr, "vector size %lu not matching matching valid chunk size, using 64\n",user_param->size);
+	}  
+
+
+	for (i = 0; i< ctx->buff_size/sizeof(int); ++i){
+		((int*) ctx->buf[0])[i] = i;
+	}
+
+        for (i = 0; i < num_of_qps ; i++) {
+                memset(&ctx->exp_wr[i],0,sizeof(struct ibv_exp_send_wr));
+
+		//for (j = 0; j < vecs; ++j)
+                for (j = 0; j < 1; ++j){
+                	ctx->sge_list[i*vecs+j].addr = (uintptr_t)ctx->buf[i*vecs + j];
+                        ctx->sge_list[i*vecs+j].length = (user_param->size / vecs);
+                        ctx->sge_list[i*vecs+j].lkey = ctx->mr[i*vecs+j]->lkey;
+		}
+		//printf("writing wqe for address: %x\n", (int) (ctx->sge_list[i*vecs].addr));
+		ctx->exp_wr[i].sg_list = &ctx->sge_list[i*vecs];
+		ctx->exp_wr[i].num_sge = vecs;
+		ctx->exp_wr[i].wr_id = i;
+		ctx->exp_wr[i].next = NULL;
+		ctx->exp_wr[i].exp_opcode = IBV_EXP_WR_SEND;
+		ctx->exp_wr[i].exp_send_flags = IBV_EXP_SEND_SIGNALED;
+		ctx->exp_wr[i].ex.imm_data = 0;
+               	ctx->exp_wr[i].exp_send_flags |= IBV_EXP_SEND_WITH_VECTOR_CALC;
+               	ctx->exp_wr[i].op.vector_calc.calc_op   = IBV_EXP_VECTOR_CALC_OP_ADD;
+               	ctx->exp_wr[i].op.vector_calc.data_type = user_param->calc_type;
+               	ctx->exp_wr[i].op.vector_calc.chunks = chunks;
+
+                ctx->scnt[i] = 0;
+		ctx->ccnt[i] = 0;
+		ctx->my_addr[i] = (uintptr_t)ctx->buf[i];
+
+	}
+}
+
+
+
 /******************************************************************************
  *
  ******************************************************************************/
@@ -2520,8 +2638,11 @@ void ctx_set_send_exp_wqes(struct pingpong_context *ctx,
 		xrc_offset = num_of_qps;
 	}
 
+
+
 	for (i = 0; i < num_of_qps ; i++) {
 		memset(&ctx->exp_wr[i*user_param->post_list],0,sizeof(struct ibv_exp_send_wr));
+
 		ctx->sge_list[i*user_param->post_list].addr = (uintptr_t)ctx->buf[i];
 
 		if (user_param->mac_fwd) {
@@ -2548,6 +2669,9 @@ void ctx_set_send_exp_wqes(struct pingpong_context *ctx,
 				ctx->rem_addr[i] = rem_dest[xrc_offset + i].vaddr;
 		}
 
+
+
+
 		for (j = 0; j < user_param->post_list; j++) {
 
 			ctx->sge_list[i*user_param->post_list + j].length =
@@ -2564,8 +2688,12 @@ void ctx_set_send_exp_wqes(struct pingpong_context *ctx,
 							j-1,ctx->my_addr[i],0,ctx->cache_line_size,ctx->cycle_buffer);
 			}
 
+
 			ctx->exp_wr[i*user_param->post_list + j].sg_list = &ctx->sge_list[i*user_param->post_list + j];
 			ctx->exp_wr[i*user_param->post_list + j].num_sge = MAX_SEND_SGE;
+
+
+
 			ctx->exp_wr[i*user_param->post_list + j].wr_id   = i;
 
 			if (j == (user_param->post_list - 1)) {
@@ -3006,7 +3134,7 @@ int perform_warm_up(struct pingpong_context *ctx,struct perftest_parameters *use
 			#ifdef HAVE_VERBS_EXP
 			if (user_param->use_exp == 1)
 				err = (ctx->exp_post_send_func_pointer)(ctx->qp[index],
-					&ctx->exp_wr[index*user_param->post_list], &bad_exp_wr);
+					&ctx->exp_wr[index*user_param->post_list* user_param->calc_num], &bad_exp_wr);
 			else
 				err = (ctx->post_send_func_pointer)(ctx->qp[index],&ctx->wr[index*user_param->post_list],&bad_wr);
 			#else
