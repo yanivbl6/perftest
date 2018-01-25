@@ -183,6 +183,10 @@ struct pingpong_context {
 	struct ibv_exp_qp_burst_family		**qp_burst_family;
 	#endif
 
+	struct ibv_mr                           **umr_mr;
+	struct ibv_exp_mem_region 		*mem_kml_list;
+
+	
 };
 
  struct pingpong_dest {
@@ -713,7 +717,8 @@ static __inline void increase_loc_addr(struct ibv_sge *sg,int size,uint64_t rcnt
 
 	//printf("size = %d, rcnt = %lu, prim_addr = %lu, cache_line_size = %d, cycle_buffer = %d, before = %x, add: %x\n", 
 	//	size,rcnt,prim_addr,cache_line_size,cycle_buffer,(int) sg->addr, (int) INC(size,cache_line_size));
-
+ 
+	return;
 	sg->addr  += INC(size,cache_line_size);
 
 	if (((rcnt+1) % (cycle_buffer/ INC(size,cache_line_size))) == 0 )
@@ -821,6 +826,10 @@ int modify_qp_to_init(struct pingpong_context *ctx,
  * Return Value : SUCCESS, FAILURE.
  *
  */
+
+
+
+
 int create_single_mr(struct pingpong_context *ctx,
 		struct perftest_parameters *user_param, int qp_index);
 
@@ -838,6 +847,15 @@ int create_single_mr(struct pingpong_context *ctx,
  * Return Value : SUCCESS, FAILURE.
  *
  */
+
+
+int create_template_umrs(struct pingpong_context *ctx, struct perftest_parameters *user_param);
+
+int create_umr_wr(struct pingpong_context *ctx, struct perftest_parameters *user_param);
+
+int invalidate_umr_wr(struct pingpong_context *ctx, struct perftest_parameters *user_param);
+
+
 int create_mr(struct pingpong_context *ctx,
 		struct perftest_parameters *user_param);
 

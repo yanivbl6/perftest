@@ -54,6 +54,8 @@ struct check_alive_data check_alive_data;
 
 /*----------------------------------------------------------------------------*/
 
+
+
 static CUdevice cuDevice;
 static CUcontext cuContext;
 
@@ -653,6 +655,7 @@ void alloc_ctx(struct pingpong_context *ctx,struct perftest_parameters *user_par
 	} else {
 		ALLOCATE(ctx->mr, struct ibv_mr*, user_param->num_of_qps * user_param->calc_num);
                 ALLOCATE(ctx->buf, void* , user_param->num_of_qps * user_param->calc_num);
+                ALLOCATE(ctx->umr_mr, struct ibv_mr*, user_param->num_of_qps);
 	}
 
 
@@ -693,9 +696,7 @@ void alloc_ctx(struct pingpong_context *ctx,struct perftest_parameters *user_par
 
 	if (user_param->machine == CLIENT || user_param->tst == LAT || user_param->duplex) {
 
-		int sges_per_qp = ( user_param->calc_num ) ? user_param->calc_num  : user_param->post_list;
-
-		ALLOCATE(ctx->sge_list, struct ibv_sge,user_param->num_of_qps * sges_per_qp);
+		ALLOCATE(ctx->sge_list, struct ibv_sge,user_param->num_of_qps * user_param->post_list);
 		#ifdef HAVE_VERBS_EXP
 		ALLOCATE(ctx->exp_wr, struct ibv_exp_send_wr, user_param->num_of_qps * user_param->post_list);
 		#endif
@@ -747,8 +748,13 @@ int destroy_ctx(struct pingpong_context *ctx,
 		sleep(user_param->wait_destroy);
 	}
 
-	dereg_counter = (user_param->mr_per_qp) ? ((user_param->calc_num ? user_param->calc_num : 1 ) * user_param->num_of_qps) : 1;
+	if (user_param->calc_num > 1){
+		if (invalidate_umr_wr(ctx ,user_param)){
+			fprintf(stderr, "Failed to invalidate UMR\n");
+		}
+	}
 
+	dereg_counter = (user_param->mr_per_qp) ? ((user_param->calc_num ? user_param->calc_num : 1 ) * user_param->num_of_qps) : 1;
 
 	if (user_param->work_rdma_cm == ON)
 		rdma_disconnect(ctx->cm_id);
@@ -1148,16 +1154,112 @@ struct ibv_exp_res_domain* create_res_domain(struct pingpong_context *ctx, struc
 }
 #endif
 
-
 /******************************************************************************
  *
  ******************************************************************************/
 
-/*
-int create_single_umr(struct pingpong_context *ctx, struct perftest_parameters *user_param, int qp_index){
+#ifdef HAVE_VERBS_EXP
+int create_template_umrs(struct pingpong_context *ctx, struct perftest_parameters *user_param)
+{
+	struct ibv_exp_mr_init_attr mr_attr;
+	mr_attr.max_klm_list_size = user_param->calc_num;
+	mr_attr.create_flags = IBV_EXP_MR_INDIRECT_KLMS;
+	mr_attr.exp_access_flags = IBV_EXP_ACCESS_LOCAL_WRITE;
+	struct ibv_exp_create_mr_in mr_in;
+	mr_in.pd = ctx->pd;
+	mr_in.attr = mr_attr;
+	for (int i = 0; i < user_param->num_of_qps; i++) {
+		ctx->umr_mr[i] = ibv_exp_create_mr(&mr_in);
+		if (!ctx->umr_mr[i]){
+			fprintf(stderr,"Error- create_single_umr failed!\n");
+			return -1;
+		}
+	}
 	return 0;
-} 
-*/
+}
+
+
+int create_umr_wr(struct pingpong_context *ctx, struct perftest_parameters *user_param)
+{
+    struct ibv_exp_send_wr wr, *bad_wr;
+    int i;
+    int vecs = user_param->calc_num;
+    int err, ne;
+    struct ibv_wc *wc = NULL;
+    ALLOCATE(wc ,struct ibv_wc ,1);
+    ALLOCATE(ctx->mem_kml_list,struct ibv_exp_mem_region, vecs * user_param->num_of_qps)
+    for (i = 0; i < user_param->num_of_qps; i++) {
+        struct ibv_exp_mem_region* mem_kml_list = ctx->mem_kml_list + i*vecs;
+        void *base = ctx->buf[i*vecs];
+        memset(&wr, 0, sizeof(struct ibv_exp_send_wr));
+        wr.wr_id = i;
+	wr.ext_op.umr.umr_type = IBV_EXP_UMR_MR_LIST;
+	wr.exp_send_flags |= IBV_EXP_SEND_INLINE | IBV_EXP_SEND_SIGNALED ; 
+	for(int j=0; j< vecs; ++j){
+		mem_kml_list[j].base_addr = (uint64_t)(uintptr_t) ctx->buf[i*vecs + j];
+		mem_kml_list[j].length = (size_t) user_param->size;
+		mem_kml_list[j].mr = ctx->mr[i*vecs + j];
+	}
+	wr.ext_op.umr.mem_list.mem_reg_list = mem_kml_list;
+        wr.ext_op.umr.num_mrs = vecs;
+        wr.ext_op.umr.exp_access = IBV_EXP_ACCESS_LOCAL_WRITE;
+        wr.ext_op.umr.modified_mr = ctx->umr_mr[i];
+        wr.ext_op.umr.base_addr = (uint64_t) (uintptr_t) ctx->buf[i*vecs]; ;
+        wr.exp_opcode = IBV_EXP_WR_UMR_FILL;
+        ctx->umr_mr[i]->length = user_param->size * vecs;
+        ctx->umr_mr[i]->addr = base;
+	err = (ctx->exp_post_send_func_pointer)(ctx->qp[i], &wr ,&bad_wr);
+	if (err){
+           printf("Error creating UMR!\n");
+           return -1;
+	}
+	ne = 0;
+	do {
+		ne = ibv_poll_cq(ctx->send_cq,1,wc);
+		if (ne < 0) {
+			fprintf(stderr, "Poll send CQ to UMR creation failed ne=%d\n",ne);
+			return -1;
+		}
+	} while(ne < 1);
+     }
+     return 0;
+}
+
+int invalidate_umr_wr(struct pingpong_context *ctx, struct perftest_parameters *user_param)
+{
+    struct ibv_exp_send_wr wr, *bad_wr;
+    int i;
+    int err, ne;
+    struct ibv_wc *wc = NULL;
+    ALLOCATE(wc ,struct ibv_wc ,1);
+    for (i = 0; i < user_param->num_of_qps; i++) {
+        memset(&wr, 0, sizeof(struct ibv_exp_send_wr));
+        wr.exp_opcode = IBV_EXP_WR_UMR_INVALIDATE;
+        wr.ext_op.umr.modified_mr = ctx->umr_mr[i];
+        wr.exp_send_flags |= IBV_EXP_SEND_INLINE | IBV_EXP_SEND_SIGNALED ;
+        err = (ctx->exp_post_send_func_pointer)(ctx->qp[i],&wr ,&bad_wr);
+	ibv_dereg_mr(ctx->umr_mr[i]);
+        if (err){
+           printf("Error invalidating UMR!\n");
+           return 1;
+        }
+
+        ne = 0;
+        do {
+          ne = ibv_poll_cq(ctx->send_cq,1,wc);
+          if (ne < 0) {
+	    fprintf(stderr, "Poll send CQ to UMR creation failed ne=%d\n",ne);
+            return -1;
+          }
+        } while(ne < 1);
+    }
+    free(ctx->mem_kml_list);
+    return 0;
+}
+
+#endif
+
+
 
 
 /******************************************************************************
@@ -1343,6 +1445,12 @@ int create_mr(struct pingpong_context *ctx, struct perftest_parameters *user_par
 		}
 	}
 
+
+#ifdef HAVE_VERBS_EXP
+	if (user_param->calc_num > 1){
+		create_template_umrs(ctx,user_param);
+	}
+#endif
 	return 0;
 }
 
@@ -1857,9 +1965,11 @@ struct ibv_qp* ctx_exp_qp_create(struct pingpong_context *ctx,
 	}
 	#endif
 
-	if (user_param->calc_num > 0){
+	if (user_param->calc_num > 1){
+		attr.max_inl_send_klms = user_param->calc_num;
 		attr.exp_create_flags |= IBV_EXP_QP_CREATE_CROSS_CHANNEL;
-                //attr.exp_create_flags |= IBV_EXP_QP_CREATE_UMR;
+                attr.exp_create_flags |= IBV_EXP_QP_CREATE_UMR;
+		attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_MAX_INL_KLMS;
 	}
 
 	qp = ibv_exp_create_qp(ctx->context, &attr);
@@ -2548,7 +2658,7 @@ void ctx_set_send_wqes(struct pingpong_context *ctx,
 void ctx_set_send_exp_calc_wqes(struct pingpong_context *ctx,
                 struct perftest_parameters *user_param){
 
-        int i,j;
+        int i;
         int num_of_qps = user_param->num_of_qps;
 	int vecs = user_param->calc_num;
 
@@ -2587,21 +2697,20 @@ void ctx_set_send_exp_calc_wqes(struct pingpong_context *ctx,
 	}  
 
 
-	for (i = 0; i< ctx->buff_size/sizeof(int); ++i){
-		((int*) ctx->buf[0])[i] = i;
-	}
-
         for (i = 0; i < num_of_qps ; i++) {
-                memset(&ctx->exp_wr[i],0,sizeof(struct ibv_exp_send_wr));
-
-		//for (j = 0; j < vecs; ++j)
-                for (j = 0; j < 1; ++j){
-                	ctx->sge_list[i*vecs+j].addr = (uintptr_t)ctx->buf[i*vecs + j];
-                        ctx->sge_list[i*vecs+j].length = (user_param->size / vecs);
-                        ctx->sge_list[i*vecs+j].lkey = ctx->mr[i*vecs+j]->lkey;
+                
+		for (int j =0 ; j < vecs; ++j){
+			for (int k = 0; k< ctx->buff_size/sizeof(int); ++k){
+				((int*) ctx->buf[i*vecs + j])[k] = (k + 1000*j + 100000*i);
+			}
 		}
-		//printf("writing wqe for address: %x\n", (int) (ctx->sge_list[i*vecs].addr));
-		ctx->exp_wr[i].sg_list = &ctx->sge_list[i*vecs];
+		memset(&ctx->exp_wr[i],0,sizeof(struct ibv_exp_send_wr));
+
+                ctx->sge_list[i].addr = (uintptr_t)ctx->buf[i*vecs];
+                ctx->sge_list[i].length = user_param->size;
+                ctx->sge_list[i].lkey = ctx->umr_mr[i]->lkey;
+	
+		ctx->exp_wr[i].sg_list = &ctx->sge_list[i];
 		ctx->exp_wr[i].num_sge = vecs;
 		ctx->exp_wr[i].wr_id = i;
 		ctx->exp_wr[i].next = NULL;
@@ -2609,13 +2718,13 @@ void ctx_set_send_exp_calc_wqes(struct pingpong_context *ctx,
 		ctx->exp_wr[i].exp_send_flags = IBV_EXP_SEND_SIGNALED;
 		ctx->exp_wr[i].ex.imm_data = 0;
                	ctx->exp_wr[i].exp_send_flags |= IBV_EXP_SEND_WITH_VECTOR_CALC;
-               	ctx->exp_wr[i].op.vector_calc.calc_op   = IBV_EXP_VECTOR_CALC_OP_ADD;
+               	ctx->exp_wr[i].op.vector_calc.calc_op = IBV_EXP_VECTOR_CALC_OP_ADD;
                	ctx->exp_wr[i].op.vector_calc.data_type = user_param->calc_type;
                	ctx->exp_wr[i].op.vector_calc.chunks = chunks;
 
                 ctx->scnt[i] = 0;
 		ctx->ccnt[i] = 0;
-		ctx->my_addr[i] = (uintptr_t)ctx->buf[i];
+		ctx->my_addr[i] = (uintptr_t)ctx->buf[i*vecs];
 
 	}
 }
@@ -3211,6 +3320,15 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	int			flows_burst_iter = 0;
 
 	ALLOCATE(wc ,struct ibv_wc ,CTX_POLL_BATCH);
+
+
+	if (user_param->calc_num > 1){
+		if (create_umr_wr(ctx,user_param)){
+	               fprintf(stderr, "Failed: UMR posting failed\n");
+	               return_value = FAILURE;
+ 	               goto cleaning;
+		}
+	}
 
 	if (user_param->test_type == DURATION) {
 		duration_param=user_param;

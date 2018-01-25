@@ -492,24 +492,33 @@ int main(int argc, char *argv[])
 			print_full_bw_report(&user_param, &my_bw_rep, &rem_bw_rep);
 		}
 
-		if (0 && user_param.calc_num > 0)
+		if (0)
 		{
-			if (user_param.machine == CLIENT){
-				printf("\nSend buffer:\n");
-			} else {
-                                printf("\nRecv buffer:\n");
-			}
+
 			int perline = 8;
 			int k,w;
-			for (k = 0; k < ctx.buff_size/(sizeof(int)*perline); ++k){
-				for (w = 0; w < perline; ++w){
-					printf("%d\t",((int*) ctx.buf[0])[k*perline + w]);
+			if (user_param.calc_num > 1){
+			        for (int j = 0; j < user_param.calc_num; ++j){
+					printf("\nSend buffer %d:\n",j);
+					for (k = 0; k < ctx.size/(sizeof(int)*perline); ++k){
+						for (w = 0; w < perline; ++w){
+							printf("%d\t",((int*) ctx.buf[j])[k*perline + w]);
+						}
+						printf("\n");
+					}
 				}
-				printf("\n");
+			} else {
+                                printf("\nRecv buffer:\n");
+				for (k = 0; k < ctx.buff_size  /(sizeof(int)*perline); ++k){
+					for (w = 0; w < perline; ++w){
+						printf("%d\t",((int*) ctx.buf[0])[k*perline + w]);
+					}
+					printf("\n");
+				}
 			}
 		}
 
-		if (user_param.report_both && user_param.duplex) {
+	if (user_param.report_both && user_param.duplex) {
 			printf(RESULT_LINE);
 			printf("\n Local results: \n");
 			printf(RESULT_LINE);

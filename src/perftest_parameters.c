@@ -719,8 +719,8 @@ static void init_perftest_params(struct perftest_parameters *user_param)
 
 	user_param->use_calc		= 0;
 	user_param->calc_num            = 0;
-	user_param->calc_type		= IBV_EXP_VECTOR_CALC_DATA_TYPE_FLOAT32;
-        user_param->calc_chunk          = IBV_EXP_VECTOR_CALC_CHUNK_1024;
+	user_param->calc_type		= IBV_EXP_VECTOR_CALC_DATA_TYPE_INT32;
+        user_param->calc_chunk          = 1024;
 
 }
 
