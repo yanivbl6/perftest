@@ -186,7 +186,11 @@ struct pingpong_context {
 	struct ibv_mr                           **umr_mr;
 	struct ibv_exp_mem_region 		*mem_kml_list;
 
-	
+	#ifdef HAVE_CUDA
+	int					numDev;
+	CUdevice 				*cuDevices;
+	CUcontext 				*cuContexts;
+	#endif
 };
 
  struct pingpong_dest {

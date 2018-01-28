@@ -47,14 +47,13 @@ for dir in sorted(os.listdir('/tmp/calc'),key=getKey2):
                 	txt= lines[1].split(" ")
 			txt[:] = (value for value in txt if value != "")
 			iof.close()
-                        size.append(int(txt[0]))
-                        bw.append(float(txt[3]))
+                        size.append(int(txt[0]) * int(NUM))
+                        bw.append(float(txt[3]) * int(NUM))
 		else:
 			print("Missing: vec %s" % NUM)
 	both=sorted(zip(size,bw),key=getKey)
 	size = [size for (size,NULL) in both]
         bw = [bw for (NULL,bw) in both]
-
 	rel_bw = [Bw/B for (Bw,B) in zip(bw,b)]
 	plt.semilogx(size, rel_bw, c=colors[k], basex=2)
 	k= k+1

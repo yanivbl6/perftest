@@ -43,6 +43,6 @@ for dir in sorted(os.listdir('/tmp/calc'),key=getKey2):
 
 
 plt.grid(True)
-plt.title("Vector Calc results, Add Float32")
+plt.title("Vector Calc results, Add INT32")
 plt.legend(lgd)
 plt.show()

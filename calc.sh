@@ -7,7 +7,7 @@ port=10000
 calc=$1
 
 
-if [[ $2 -lt 32 ]];then
+if [[ $2 -lt 0 ]];then
 	size_bits=$2
 	size=`echo "2^$size_bits" | bc`
 else
@@ -24,13 +24,18 @@ else
 	calc_cmd=""
 fi
 
+cuda_cmd=""
+echo $1
+if [[ $1 == "--gpu" ]]; then
+	cuda_cmd="--use_cuda"
+fi
 
 echo "Running remote with size $remote_size"
-rm_cmd="/yanivbl/perftest/ib_send_bw -p $port --report_gbits -s $remote_size > /dev/null 2> /dev/null"
+rm_cmd="/yanivbl/perftest/ib_send_bw -p $port --report_gbits -s $remote_size $cuda_cmd  > /dev/null 2> /dev/null"
 echo "$rm_cmd"
 ssh root@$server "$rm_cmd" &
 sleep 3
 echo "Running Local with size $size"
-l_cmd="./ib_send_bw $server -p $port --report_gbits -s $size $calc_cmd 2> /dev/null"
+l_cmd="./ib_send_bw $server -p $port --report_gbits -s $size $calc_cmd $cuda_cmd  2> /dev/null"
 echo "$l_cmd"
 eval $l_cmd
