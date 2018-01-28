@@ -1201,10 +1201,11 @@ int create_template_umrs(struct pingpong_context *ctx, struct perftest_parameter
 	struct ibv_exp_create_mr_in mr_in;
 	mr_in.pd = ctx->pd;
 	mr_in.attr = mr_attr;
+	mr_in.comp_mask = 0;
 	for (int i = 0; i < user_param->num_of_qps; i++) {
 		ctx->umr_mr[i] = ibv_exp_create_mr(&mr_in);
 		if (!ctx->umr_mr[i]){
-			fprintf(stderr,"Error- create_single_umr failed!\n");
+			fprintf(stderr,"Error- create_template_umrs failed!\n");
 			return -1;
 		}
 	}
@@ -1250,11 +1251,14 @@ int create_umr_wr(struct pingpong_context *ctx, struct perftest_parameters *user
 	do {
 		ne = ibv_poll_cq(ctx->send_cq,1,wc);
 		if (ne < 0) {
+			free(wc);
 			fprintf(stderr, "Poll send CQ to UMR creation failed ne=%d\n",ne);
 			return -1;
 		}
 	} while(ne < 1);
      }
+     free(wc);
+     printf("Stage 2\n");
      return 0;
 }
 
@@ -1281,11 +1285,13 @@ int invalidate_umr_wr(struct pingpong_context *ctx, struct perftest_parameters *
         do {
           ne = ibv_poll_cq(ctx->send_cq,1,wc);
           if (ne < 0) {
+	    free(wc);
 	    fprintf(stderr, "Poll send CQ to UMR creation failed ne=%d\n",ne);
             return -1;
           }
         } while(ne < 1);
     }
+    free(wc);
     free(ctx->mem_kml_list);
     return 0;
 }
@@ -2673,7 +2679,7 @@ void ctx_set_send_wqes(struct pingpong_context *ctx,
 	#ifdef HAVE_VERBS_EXP
 	if (user_param->use_exp == 1) 
 	{
-		if (user_param->calc_num == 0)
+		if (user_param->calc_num < 2)
 			ctx_set_send_exp_wqes(ctx,user_param,rem_dest);
 		else 
                         ctx_set_send_exp_calc_wqes(ctx,user_param);	
@@ -2724,8 +2730,8 @@ void ctx_set_send_exp_calc_wqes(struct pingpong_context *ctx,
 		chunks = IBV_EXP_VECTOR_CALC_CHUNK_8192;
 		break;
 	default:
-		chunks = IBV_EXP_VECTOR_CALC_CHUNK_64;
-		fprintf(stderr, "vector size %lu not matching matching valid chunk size, using 64\n",user_param->size);
+		chunks = IBV_EXP_VECTOR_CALC_CHUNK_1024;
+		fprintf(stderr, "vector size %lu not matching matching valid chunk size, using 1024\n",user_param->size);
 	}  
 
 
@@ -2755,10 +2761,11 @@ void ctx_set_send_exp_calc_wqes(struct pingpong_context *ctx,
                	ctx->exp_wr[i].op.vector_calc.data_type = user_param->calc_type;
                	ctx->exp_wr[i].op.vector_calc.chunks = chunks;
 
-                ctx->scnt[i] = 0;
-		ctx->ccnt[i] = 0;
+		if (user_param->tst == BW || user_param->tst == LAT_BY_BW ) {
+                	ctx->scnt[i] = 0;
+			ctx->ccnt[i] = 0;
+		}
 		ctx->my_addr[i] = (uintptr_t)ctx->buf[i*vecs];
-
 	}
 }
 
@@ -4634,8 +4641,7 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 	if (user_param->calc_num > 1){
 		if (create_umr_wr(ctx,user_param)){
 	               fprintf(stderr, "Failed: UMR posting failed\n");
-	               return_value = FAILURE;
- 	               goto cleaning;
+	               return 1;
 		}
 	}
 
@@ -4731,6 +4737,15 @@ int run_iter_lat_send(struct pingpong_context *ctx,struct perftest_parameters *u
 	cycles_t 		end_cycle, start_gap=0;
 	uintptr_t		primary_send_addr = ctx->sge_list[0].addr;
 	uintptr_t		primary_recv_addr = ctx->recv_sge_list[0].addr;
+
+
+	if (user_param->calc_num > 1){
+		if (create_umr_wr(ctx,user_param)){
+	               fprintf(stderr, "Failed: UMR posting failed\n");
+	               return 1;
+		}
+	}
+
 	if (user_param->connection_type != RawEth) {
 		#ifdef HAVE_VERBS_EXP
 		if (user_param->use_exp == 1) {
